@@ -110,6 +110,14 @@ def format_user_setting_line(user_dict, key):
     return f"<b>{get_user_setting_label(key)}:</b> <code>{escape(summary)}</code> <i>({source})</i>"
 
 
+def get_user_edit_instructions(option):
+    if option in ["UPLOAD_PATHS", "FFMPEG_CMDS", "YT_DLP_OPTIONS", "GALLERY_DL_OPTIONS"]:
+        return "Send a dict value. Timeout: 60 sec"
+    if option == "LEECH_SPLIT_SIZE":
+        return "Send a size like <code>500mb</code>, <code>2gb</code>, or raw bytes. Timeout: 60 sec"
+    return "Send a new value. Timeout: 60 sec"
+
+
 def parse_mapping_input(raw_value, label):
     if not raw_value.startswith("{") or not raw_value.endswith("}"):
         raise ValueError(f"{label} must be a Python-style dict like {{'key': 'value'}}.")
@@ -621,8 +629,9 @@ async def get_menu(option, message, user_id):
     value, source = get_setting_source_and_value(user_dict, option)
     text = (
         f"<b>{get_user_setting_label(option)}</b>\n"
-        f"Effective value: <code>{escape(summarize_setting_value(value))}</code>\n"
-        f"Source: <b>{source}</b>"
+        f"Now: <code>{escape(summarize_setting_value(value))}</code>\n"
+        f"Using: <b>{source}</b>\n"
+        f"{get_user_edit_instructions(option)}"
     )
     await edit_message(message, text, buttons.build_menu(2))
 

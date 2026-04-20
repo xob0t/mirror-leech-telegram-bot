@@ -69,7 +69,10 @@ DEFAULT_VALUES = {
 }
 
 SETTING_LABELS = {
+    "AS_DOCUMENT": "Send as Document",
     "DEFAULT_UPLOAD": "Default Upload Tool",
+    "EQUAL_SPLITS": "Split Evenly",
+    "MEDIA_GROUP": "Media Group",
     "STATUS_UPDATE_INTERVAL": "Status Refresh Interval",
     "QUEUE_ALL": "Total Parallel Tasks",
     "QUEUE_DOWNLOAD": "Parallel Downloads",
@@ -91,6 +94,9 @@ SETTING_LABELS = {
     "USER_TRANSMISSION": "Leech by User Session",
     "HYBRID_LEECH": "Hybrid Leech",
     "FILES_LINKS": "File Link Buttons",
+    "STOP_DUPLICATE": "Stop Duplicates",
+    "USE_SERVICE_ACCOUNTS": "Use Service Accounts",
+    "WEB_PINCODE": "Web PIN Code",
     "UPLOAD_PATHS": "Saved Upload Paths",
     "NAME_SUBSTITUTE": "Filename Rename Rules",
     "YT_DLP_OPTIONS": "yt-dlp Defaults",
@@ -152,8 +158,20 @@ def get_config_source(key, value):
     if value in ("", None, [], {}, ()):
         return "Unset"
     if key in CONFIG_DEFAULTS and value == default_value:
-        return "Default"
-    return "Customized"
+        return "Bot Default"
+    return "Saved Here"
+
+
+def is_bool_setting(key):
+    return isinstance(CONFIG_DEFAULTS.get(key), bool)
+
+
+def get_edit_instructions(key):
+    if is_bool_setting(key):
+        return "Choose an option below. You can still send <code>true</code> or <code>false</code>. Timeout: 60 sec"
+    if key == "DEFAULT_UPLOAD":
+        return "Send <code>rc</code> for Rclone or <code>gd</code> for Google Drive. Timeout: 60 sec"
+    return "Send a new value. Timeout: 60 sec"
 
 
 def validate_bot_variable(key, value):
@@ -205,6 +223,9 @@ async def get_buttons(key=None, edit_type=None):
             source = get_config_source(key, value)
             msg = ""
             buttons.data_button("Back", "botset var")
+            if is_bool_setting(key):
+                buttons.data_button("Enable", f"botset boolvar {key} true")
+                buttons.data_button("Disable", f"botset boolvar {key} false")
             if key not in ["TELEGRAM_HASH", "TELEGRAM_API", "OWNER_ID", "BOT_TOKEN"]:
                 buttons.data_button("Default", f"botset resetvar {key}")
             buttons.data_button("Close", "botset close")
@@ -220,10 +241,9 @@ async def get_buttons(key=None, edit_type=None):
                 msg += "Restart required for this edit to take effect! You will not see the changes in bot vars, the edit will be in database only!\n\n"
             msg += (
                 f"<b>{label}</b>\n"
-                f"Config key: <code>{key}</code>\n"
-                f"Current value: <code>{summarize_value(value)}</code>\n"
-                f"Source: <b>{source}</b>\n"
-                "Send a new value. Timeout: 60 sec"
+                f"Now: <code>{summarize_value(value)}</code>\n"
+                f"Using: <b>{source}</b>\n"
+                f"{get_edit_instructions(key)}"
             )
         elif edit_type == "ariavar":
             label = "Add New Aria2c Option" if key == "newkey" else get_setting_label(key)
@@ -382,14 +402,7 @@ async def update_buttons(message, key=None, edit_type=None):
     await edit_message(message, msg, button)
 
 
-@new_task
-async def edit_variable(_, message, pre_message, key):
-    handler_dict[message.chat.id] = False
-    try:
-        value = validate_bot_variable(key, message.text)
-    except ValueError as e:
-        await send_message(message, str(e))
-        return
+async def save_bot_variable(pre_message, key, value):
     text_value = value if isinstance(value, str) else None
     if text_value and text_value.lower() == "true":
         value = True
@@ -464,7 +477,6 @@ async def edit_variable(_, message, pre_message, key):
         value = literal_eval(value)
     Config.set(key, value)
     await update_buttons(pre_message, "var")
-    await delete_message(message)
     await database.update_config({key: value})
     if key in ["SEARCH_PLUGINS", "SEARCH_API_LINK"]:
         await initiate_search_tools()
@@ -484,6 +496,18 @@ async def edit_variable(_, message, pre_message, key):
     elif key == "USET_SERVERS":
         for s in value:
             await sabnzbd_client.set_special_config("servers", s)
+
+
+@new_task
+async def edit_variable(_, message, pre_message, key):
+    handler_dict[message.chat.id] = False
+    try:
+        value = validate_bot_variable(key, message.text)
+    except ValueError as e:
+        await send_message(message, str(e))
+        return
+    await delete_message(message)
+    await save_bot_variable(pre_message, key, value)
 
 
 @new_task
@@ -860,9 +884,17 @@ async def edit_bot_settings(client, query):
         pfunc = partial(update_private_file, pre_message=message)
         rfunc = partial(update_buttons, message)
         await event_handler(client, query, pfunc, rfunc, True)
+    elif data[1] == "boolvar":
+        await query.answer(
+            f"{get_setting_label(data[2])} {'enabled' if data[3] == 'true' else 'disabled'}.",
+            show_alert=True,
+        )
+        await save_bot_variable(message, data[2], data[3])
     elif data[1] == "botvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
+        if is_bool_setting(data[2]):
+            return
         pfunc = partial(edit_variable, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "var")
         await event_handler(client, query, pfunc, rfunc)
