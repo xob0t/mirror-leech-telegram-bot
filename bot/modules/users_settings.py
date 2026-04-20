@@ -499,7 +499,7 @@ async def get_user_settings(from_user, stype="main"):
 {format_user_setting_line(user_dict, "GALLERY_DL_OPTIONS")}
 {format_user_setting_line(user_dict, "FFMPEG_CMDS")}"""
 
-    return text, buttons.build_menu(2)
+    return text, buttons.build_menu(2, h_cols=2, f_cols=2)
 
 
 async def update_user_settings(query, stype="main"):

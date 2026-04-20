@@ -393,7 +393,11 @@ Timeout: 60 sec"""
                 )
         msg = f"Server Keys | Page: {int(start / 10)} | State: {state}"
 
-    button = buttons.build_menu(1) if key is None else buttons.build_menu(2)
+    button = (
+        buttons.build_menu(1, h_cols=2, f_cols=2)
+        if key is None
+        else buttons.build_menu(2, h_cols=2, f_cols=2)
+    )
     return msg, button
 
 
