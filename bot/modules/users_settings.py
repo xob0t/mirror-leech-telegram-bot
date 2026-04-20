@@ -624,8 +624,8 @@ async def get_menu(option, message, user_id):
         back_to = "gdrive"
     else:
         back_to = "back"
-    buttons.data_button("Back", f"userset {user_id} {back_to}")
-    buttons.data_button("Close", f"userset {user_id} close")
+    buttons.data_button("Back", f"userset {user_id} {back_to}", position="footer")
+    buttons.data_button("Close", f"userset {user_id} close", position="footer")
     value, source = get_setting_source_and_value(user_dict, option)
     text = (
         f"<b>{get_user_setting_label(option)}</b>\n"
@@ -682,8 +682,8 @@ async def ffmpeg_variables(
             buttons.data_button(
                 "Reset", f"userset {user_id} ffvar {key} ffmpegvarreset"
             )
-            buttons.data_button("Back", f"userset {user_id} ffvar")
-            buttons.data_button("Close", f"userset {user_id} close")
+            buttons.data_button("Back", f"userset {user_id} ffvar", position="footer")
+            buttons.data_button("Close", f"userset {user_id} close", position="footer")
         elif key in ffc and value:
             old_value = (
                 user_dict.get("FFMPEG_VARIABLES", {})
@@ -694,8 +694,8 @@ async def ffmpeg_variables(
             msg = f"Edit/Fill this FFmpeg Variable: <u>{key}</u>\n\nItem: {ffc[key][int(index)]}\n\nVariable: {value}"
             if old_value:
                 msg += f"\n\nCurrent Value: {old_value}"
-            buttons.data_button("Back", f"userset {user_id} setevent")
-            buttons.data_button("Close", f"userset {user_id} close")
+            buttons.data_button("Back", f"userset {user_id} setevent", position="footer")
+            buttons.data_button("Close", f"userset {user_id} close", position="footer")
         else:
             return
         await edit_message(message, msg, buttons.build_menu(2))
@@ -775,8 +775,8 @@ async def edit_user_settings(client, query):
             text = "Send rclone.conf. Timeout: 60 sec"
         else:
             text = "Send token.pickle. Timeout: 60 sec"
-        buttons.data_button("Back", f"userset {user_id} setevent")
-        buttons.data_button("Close", f"userset {user_id} close")
+        buttons.data_button("Back", f"userset {user_id} setevent", position="footer")
+        buttons.data_button("Close", f"userset {user_id} close", position="footer")
         await edit_message(message, text, buttons.build_menu(2))
         pfunc = partial(add_file, ftype=data[3])
         await event_handler(
@@ -822,8 +822,8 @@ async def edit_user_settings(client, query):
                 "Timeout: 60 sec"
             )
             func = remove_one
-        buttons.data_button("Back", f"userset {user_id} setevent")
-        buttons.data_button("Close", f"userset {user_id} close")
+        buttons.data_button("Back", f"userset {user_id} setevent", position="footer")
+        buttons.data_button("Close", f"userset {user_id} close", position="footer")
         await edit_message(message, text, buttons.build_menu(2))
         pfunc = partial(func, option=data[3])
         await event_handler(client, query, pfunc)
