@@ -1,6 +1,7 @@
 from aiofiles import open as aiopen
 from aiofiles.os import remove, rename, path as aiopath
 from aioshutil import rmtree
+from ast import literal_eval, parse
 from asyncio import (
     create_subprocess_exec,
     create_subprocess_shell,
@@ -10,6 +11,7 @@ from asyncio import (
 from functools import partial
 from io import BytesIO
 from os import getcwd
+from pathlib import Path
 from pyrogram.filters import create
 from pyrogram.handlers import MessageHandler
 from time import time
@@ -66,20 +68,141 @@ DEFAULT_VALUES = {
     "DEFAULT_UPLOAD": "rc",
 }
 
+SETTING_LABELS = {
+    "DEFAULT_UPLOAD": "Default Upload Tool",
+    "STATUS_UPDATE_INTERVAL": "Status Refresh Interval",
+    "QUEUE_ALL": "Total Parallel Tasks",
+    "QUEUE_DOWNLOAD": "Parallel Downloads",
+    "QUEUE_UPLOAD": "Parallel Uploads",
+    "LEECH_SPLIT_SIZE": "Split Size",
+    "RCLONE_PATH": "Default Rclone Path",
+    "RCLONE_FLAGS": "Default Rclone Flags",
+    "GDRIVE_ID": "Default Google Drive ID",
+    "INDEX_URL": "Index URL",
+    "BASE_URL": "Web Base URL",
+    "BASE_URL_PORT": "Web Port",
+    "RSS_CHAT": "RSS Target Chat",
+    "RSS_DELAY": "RSS Poll Interval",
+    "RSS_SIZE_LIMIT": "RSS Size Limit",
+    "SEARCH_LIMIT": "Search Result Limit",
+    "AUTHORIZED_CHATS": "Authorized Chats",
+    "SUDO_USERS": "Sudo Users",
+    "USER_SESSION_STRING": "User Session String",
+    "USER_TRANSMISSION": "Leech by User Session",
+    "HYBRID_LEECH": "Hybrid Leech",
+    "FILES_LINKS": "File Link Buttons",
+    "UPLOAD_PATHS": "Saved Upload Paths",
+    "NAME_SUBSTITUTE": "Filename Rename Rules",
+    "YT_DLP_OPTIONS": "yt-dlp Defaults",
+    "GALLERY_DL_OPTIONS": "gallery-dl Defaults",
+    "FFMPEG_CMDS": "FFmpeg Presets",
+    "TG_PROXY": "Telegram Proxy",
+    "UPSTREAM_REPO": "Update Repository",
+    "UPSTREAM_BRANCH": "Update Branch",
+    "USENET_SERVERS": "Usenet Servers",
+}
+
+
+def get_setting_label(key):
+    return SETTING_LABELS.get(key, key.replace("_", " ").title())
+
+
+def summarize_value(value):
+    if value in ("", None, [], {}, ()):
+        return "Not set"
+    if isinstance(value, bool):
+        return "Enabled" if value else "Disabled"
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        preview = ", ".join(map(str, keys[:3]))
+        extra = "" if len(keys) <= 3 else f" +{len(keys) - 3} more"
+        return f"{len(value)} saved ({preview}{extra})" if preview else "Empty dict"
+    if isinstance(value, list):
+        preview = ", ".join(map(str, value[:3]))
+        extra = "" if len(value) <= 3 else f" +{len(value) - 3} more"
+        return f"{len(value)} items ({preview}{extra})" if preview else "Empty list"
+    text = str(value).strip()
+    return text if len(text) <= 60 else f"{text[:57]}..."
+
+
+def load_config_defaults():
+    path = Path(__file__).resolve().parent.parent / "core" / "config_manager.py"
+    defaults = {}
+    module = parse(path.read_text(encoding="utf-8"))
+    for node in module.body:
+        if getattr(node, "name", None) != "Config":
+            continue
+        for item in node.body:
+            if getattr(item, "__class__", None).__name__ == "Assign" and len(item.targets) == 1:
+                target = item.targets[0]
+                if getattr(target, "id", None):
+                    try:
+                        defaults[target.id] = literal_eval(item.value)
+                    except Exception:
+                        continue
+        break
+    return defaults
+
+
+CONFIG_DEFAULTS = load_config_defaults()
+
+
+def get_config_source(key, value):
+    default_value = CONFIG_DEFAULTS.get(key)
+    if value in ("", None, [], {}, ()):
+        return "Unset"
+    if key in CONFIG_DEFAULTS and value == default_value:
+        return "Default"
+    return "Customized"
+
+
+def validate_bot_variable(key, value):
+    label = get_setting_label(key)
+    raw_value = str(value).strip()
+    if key in {"STATUS_UPDATE_INTERVAL", "QUEUE_ALL", "QUEUE_DOWNLOAD", "QUEUE_UPLOAD", "RSS_DELAY", "RSS_SIZE_LIMIT", "SEARCH_LIMIT", "BASE_URL_PORT", "TORRENT_TIMEOUT"}:
+        if not raw_value.isdigit():
+            raise ValueError(f"{label} must be a whole number.")
+        number = int(raw_value)
+        if number < 0:
+            raise ValueError(f"{label} cannot be negative.")
+        if key == "BASE_URL_PORT" and not 1 <= number <= 65535:
+            raise ValueError(f"{label} must be between 1 and 65535.")
+        if key == "STATUS_UPDATE_INTERVAL" and number == 0:
+            raise ValueError(f"{label} must be greater than 0.")
+        return number
+    if key == "LEECH_SPLIT_SIZE":
+        if not raw_value.isdigit():
+            raise ValueError(f"{label} must be a number of bytes.")
+        number = int(raw_value)
+        if number <= 0:
+            raise ValueError(f"{label} must be greater than 0.")
+        return min(number, TgClient.MAX_SPLIT_SIZE)
+    if key == "DEFAULT_UPLOAD":
+        lowered = raw_value.lower()
+        if lowered not in {"gd", "rc"}:
+            raise ValueError(f"{label} must be either 'gd' or 'rc'.")
+        return lowered
+    if key in {"AUTHORIZED_CHATS", "SUDO_USERS", "BASE_URL", "RSS_CHAT", "GDRIVE_ID", "INDEX_URL", "RCLONE_PATH", "RCLONE_FLAGS", "UPSTREAM_REPO", "UPSTREAM_BRANCH"} and not raw_value:
+        raise ValueError(f"{label} cannot be empty.")
+    return value
+
 
 async def get_buttons(key=None, edit_type=None):
     buttons = ButtonMaker()
     if key is None:
-        buttons.data_button("Config Variables", "botset var")
+        buttons.data_button("Bot Defaults", "botset var")
         buttons.data_button("Private Files", "botset private")
-        buttons.data_button("Qbit Settings", "botset qbit")
-        buttons.data_button("Aria2c Settings", "botset aria")
-        buttons.data_button("Sabnzbd Settings", "botset nzb")
+        buttons.data_button("qBittorrent", "botset qbit")
+        buttons.data_button("Aria2c", "botset aria")
+        buttons.data_button("Sabnzbd", "botset nzb")
         buttons.data_button("JDownloader Sync", "botset syncjd")
         buttons.data_button("Close", "botset close")
-        msg = "Bot Settings:"
+        msg = "Bot Settings\nChoose an area to view or edit."
     elif edit_type is not None:
         if edit_type == "botvar":
+            label = get_setting_label(key)
+            value = Config.get(key)
+            source = get_config_source(key, value)
             msg = ""
             buttons.data_button("Back", "botset var")
             if key not in ["TELEGRAM_HASH", "TELEGRAM_API", "OWNER_ID", "BOT_TOKEN"]:
@@ -95,28 +218,49 @@ async def get_buttons(key=None, edit_type=None):
                 "TG_PROXY",
             ]:
                 msg += "Restart required for this edit to take effect! You will not see the changes in bot vars, the edit will be in database only!\n\n"
-            msg += f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
+            msg += (
+                f"<b>{label}</b>\n"
+                f"Config key: <code>{key}</code>\n"
+                f"Current value: <code>{summarize_value(value)}</code>\n"
+                f"Source: <b>{source}</b>\n"
+                "Send a new value. Timeout: 60 sec"
+            )
         elif edit_type == "ariavar":
+            label = "Add New Aria2c Option" if key == "newkey" else get_setting_label(key)
             buttons.data_button("Back", "botset aria")
             if key != "newkey":
                 buttons.data_button("Empty String", f"botset emptyaria {key}")
             buttons.data_button("Close", "botset close")
             msg = (
-                "Send a key with value. Example: https-proxy-user:value. Timeout: 60 sec"
+                f"<b>{label}</b>\nSend a key with value.\nExample: https-proxy-user:value\nTimeout: 60 sec"
                 if key == "newkey"
-                else f"Send a valid value for {key}. Current value is '{aria2_options[key]}'. Timeout: 60 sec"
+                else (
+                    f"<b>{label}</b>\n"
+                    f"Current value: <code>{summarize_value(aria2_options[key])}</code>\n"
+                    "Send a new value. Timeout: 60 sec"
+                )
             )
         elif edit_type == "qbitvar":
             buttons.data_button("Back", "botset qbit")
             buttons.data_button("Empty String", f"botset emptyqbit {key}")
             buttons.data_button("Close", "botset close")
-            msg = f"Send a valid value for {key}. Current value is '{qbit_options[key]}'. Timeout: 60 sec"
+            msg = (
+                f"<b>{get_setting_label(key)}</b>\n"
+                f"Current value: <code>{summarize_value(qbit_options[key])}</code>\n"
+                "Send a new value. Timeout: 60 sec"
+            )
         elif edit_type == "nzbvar":
             buttons.data_button("Back", "botset nzb")
             buttons.data_button("Default", f"botset resetnzb {key}")
             buttons.data_button("Empty String", f"botset emptynzb {key}")
             buttons.data_button("Close", "botset close")
-            msg = f"Send a valid value for {key}. Current value is '{nzb_options[key]}'.\nIf the value is list then separate them by space or ,\nExample: .exe,info or .exe .info\nTimeout: 60 sec"
+            msg = (
+                f"<b>{get_setting_label(key)}</b>\n"
+                f"Current value: <code>{summarize_value(nzb_options[key])}</code>\n"
+                "If the value is a list, separate entries with spaces or commas.\n"
+                "Example: .exe,info or .exe .info\n"
+                "Timeout: 60 sec"
+            )
         elif edit_type.startswith("nzbsevar"):
             index = 0 if key == "newser" else int(edit_type.replace("nzbsevar", ""))
             if key == "newser":
@@ -132,7 +276,7 @@ async def get_buttons(key=None, edit_type=None):
         for k in list(conf_dict.keys())[start : 10 + start]:
             if k in ["DATABASE_URL", "DATABASE_NAME"] and state != "view":
                 continue
-            buttons.data_button(k, f"botset botvar {k}")
+            buttons.data_button(get_setting_label(k), f"botset botvar {k}")
         if state == "view":
             buttons.data_button("Edit", "botset edit var")
         else:
@@ -143,7 +287,7 @@ async def get_buttons(key=None, edit_type=None):
             buttons.data_button(
                 f"{int(x / 10)}", f"botset start var {x}", position="footer"
             )
-        msg = f"Config Variables | Page: {int(start / 10)} | State: {state}"
+        msg = f"Bot Defaults | Page: {int(start / 10)} | State: {state}"
     elif key == "private":
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
@@ -154,7 +298,7 @@ Timeout: 60 sec"""
     elif key == "aria":
         for k in list(aria2_options.keys())[start : 10 + start]:
             if k not in ["checksum", "index-out", "out", "pause", "select-file"]:
-                buttons.data_button(k, f"botset ariavar {k}")
+                buttons.data_button(get_setting_label(k), f"botset ariavar {k}")
         if state == "view":
             buttons.data_button("Edit", "botset edit aria")
         else:
@@ -169,7 +313,7 @@ Timeout: 60 sec"""
         msg = f"Aria2c Options | Page: {int(start / 10)} | State: {state}"
     elif key == "qbit":
         for k in list(qbit_options.keys())[start : 10 + start]:
-            buttons.data_button(k, f"botset qbitvar {k}")
+            buttons.data_button(get_setting_label(k), f"botset qbitvar {k}")
         if state == "view":
             buttons.data_button("Edit", "botset edit qbit")
         else:
@@ -184,7 +328,7 @@ Timeout: 60 sec"""
         msg = f"Qbittorrent Options | Page: {int(start / 10)} | State: {state}"
     elif key == "nzb":
         for k in list(nzb_options.keys())[start : 10 + start]:
-            buttons.data_button(k, f"botset nzbvar {k}")
+            buttons.data_button(get_setting_label(k), f"botset nzbvar {k}")
         if state == "view":
             buttons.data_button("Edit", "botset edit nzb")
         else:
@@ -214,7 +358,7 @@ Timeout: 60 sec"""
     elif key.startswith("nzbser"):
         index = int(key.replace("nzbser", ""))
         for k in list(Config.USENET_SERVERS[index].keys())[start : 10 + start]:
-            buttons.data_button(k, f"botset nzbsevar{index} {k}")
+            buttons.data_button(get_setting_label(k), f"botset nzbsevar{index} {k}")
         if state == "view":
             buttons.data_button("Edit", f"botset edit {key}")
         else:
@@ -241,10 +385,15 @@ async def update_buttons(message, key=None, edit_type=None):
 @new_task
 async def edit_variable(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
-    value = str(message.text)
-    if value.lower() == "true":
+    try:
+        value = validate_bot_variable(key, message.text)
+    except ValueError as e:
+        await send_message(message, str(e))
+        return
+    text_value = value if isinstance(value, str) else None
+    if text_value and text_value.lower() == "true":
         value = True
-    elif value.lower() == "false":
+    elif text_value and text_value.lower() == "false":
         value = False
         if key == "INCOMPLETE_TASK_NOTIFIER" and Config.DATABASE_URL:
             await database.trunc_table("tasks")
@@ -307,12 +456,12 @@ async def edit_variable(_, message, pre_message, key):
         aid = value.split()
         for id_ in aid:
             sudo_users.append(int(id_.strip()))
-    elif value.isdigit():
+    elif isinstance(value, str) and value.isdigit():
         value = int(value)
-    elif value.startswith("[") and value.endswith("]"):
-        value = eval(value)
-    elif value.startswith("{") and value.endswith("}"):
-        value = eval(value)
+    elif isinstance(value, str) and value.startswith("[") and value.endswith("]"):
+        value = literal_eval(value)
+    elif isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        value = literal_eval(value)
     Config.set(key, value)
     await update_buttons(pre_message, "var")
     await delete_message(message)
@@ -342,6 +491,9 @@ async def edit_aria(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
     value = str(message.text)
     if key == "newkey":
+        if ":" not in value:
+            await send_message(message, "Use key:value format.")
+            return
         key, value = [x.strip() for x in value.split(":", 1)]
     elif value.lower() == "true":
         value = "true"
@@ -380,9 +532,10 @@ async def edit_nzb(_, message, pre_message, key):
         value = int(value)
     elif value.startswith("[") and value.endswith("]"):
         try:
-            value = ",".join(eval(value))
+            value = ",".join(literal_eval(value))
         except Exception as e:
             LOGGER.error(e)
+            await send_message(message, f"{get_setting_label(key)} must be a valid list.")
             await update_buttons(pre_message, "nzb")
             return
     res = await sabnzbd_client.set_config("misc", key, value)
@@ -399,7 +552,7 @@ async def edit_nzb_server(_, message, pre_message, key, index=0):
     if key == "newser":
         if value.startswith("{") and value.endswith("}"):
             try:
-                value = eval(value)
+                value = literal_eval(value)
             except:
                 await send_message(message, "Invalid dict format!")
                 await update_buttons(pre_message, "nzbserver")
@@ -714,16 +867,18 @@ async def edit_bot_settings(client, query):
         rfunc = partial(update_buttons, message, "var")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "botvar" and state == "view":
-        value = f"{Config.get(data[2])}"
+        current_value = Config.get(data[2])
+        value = f"{current_value}"
         if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
                 await send_file(message, out_file)
             return
-        elif value == "":
-            value = None
-        await query.answer(f"{value}", show_alert=True)
+        await query.answer(
+            f"{get_setting_label(data[2])}: {summarize_value(current_value)} ({get_config_source(data[2], current_value)})",
+            show_alert=True,
+        )
     elif data[1] == "ariavar" and (state == "edit" or data[2] == "newkey"):
         await query.answer()
         await update_buttons(message, data[2], data[1])
@@ -731,16 +886,18 @@ async def edit_bot_settings(client, query):
         rfunc = partial(update_buttons, message, "aria")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "ariavar" and state == "view":
-        value = f"{aria2_options[data[2]]}"
+        current_value = aria2_options[data[2]]
+        value = f"{current_value}"
         if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
                 await send_file(message, out_file)
             return
-        elif value == "":
-            value = None
-        await query.answer(f"{value}", show_alert=True)
+        await query.answer(
+            f"{get_setting_label(data[2])}: {summarize_value(current_value)}",
+            show_alert=True,
+        )
     elif data[1] == "qbitvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
@@ -748,16 +905,18 @@ async def edit_bot_settings(client, query):
         rfunc = partial(update_buttons, message, "qbit")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "qbitvar" and state == "view":
-        value = f"{qbit_options[data[2]]}"
+        current_value = qbit_options[data[2]]
+        value = f"{current_value}"
         if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
                 await send_file(message, out_file)
             return
-        elif value == "":
-            value = None
-        await query.answer(f"{value}", show_alert=True)
+        await query.answer(
+            f"{get_setting_label(data[2])}: {summarize_value(current_value)}",
+            show_alert=True,
+        )
     elif data[1] == "nzbvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
@@ -765,16 +924,18 @@ async def edit_bot_settings(client, query):
         rfunc = partial(update_buttons, message, "nzb")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "nzbvar" and state == "view":
-        value = f"{nzb_options[data[2]]}"
+        current_value = nzb_options[data[2]]
+        value = f"{current_value}"
         if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
                 await send_file(message, out_file)
             return
-        elif value == "":
-            value = None
-        await query.answer(f"{value}", show_alert=True)
+        await query.answer(
+            f"{get_setting_label(data[2])}: {summarize_value(current_value)}",
+            show_alert=True,
+        )
     elif data[1] == "emptyserkey":
         await query.answer()
         await update_buttons(message, f"nzbser{data[2]}")
@@ -797,16 +958,18 @@ async def edit_bot_settings(client, query):
         await event_handler(client, query, pfunc, rfunc)
     elif data[1].startswith("nzbsevar") and state == "view":
         index = int(data[1].replace("nzbsevar", ""))
-        value = f"{Config.USENET_SERVERS[index][data[2]]}"
+        current_value = Config.USENET_SERVERS[index][data[2]]
+        value = f"{current_value}"
         if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
                 await send_file(message, out_file)
             return
-        elif value == "":
-            value = None
-        await query.answer(f"{value}", show_alert=True)
+        await query.answer(
+            f"{get_setting_label(data[2])}: {summarize_value(current_value)}",
+            show_alert=True,
+        )
     elif data[1] == "edit":
         await query.answer()
         globals()["state"] = "edit"

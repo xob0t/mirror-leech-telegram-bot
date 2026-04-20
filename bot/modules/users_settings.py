@@ -1,5 +1,6 @@
 from aiofiles.os import remove, path as aiopath, makedirs
 from asyncio import sleep
+from ast import literal_eval
 from functools import partial
 from html import escape
 from io import BytesIO
@@ -36,6 +37,28 @@ from ..helper.telegram_helper.message_utils import (
 
 handler_dict = {}
 
+USER_SETTING_LABELS = {
+    "THUMBNAIL": "Custom Thumbnail",
+    "LEECH_SPLIT_SIZE": "Split Size",
+    "LEECH_DUMP_CHAT": "Leech Destination",
+    "LEECH_FILENAME_PREFIX": "Filename Prefix",
+    "THUMBNAIL_LAYOUT": "Thumbnail Grid",
+    "CLONE_DUMP_CHATS": "Clone Dump Chats",
+    "RCLONE_CONFIG": "Rclone Config File",
+    "RCLONE_PATH": "Default Rclone Path",
+    "RCLONE_FLAGS": "Default Rclone Flags",
+    "TOKEN_PICKLE": "Google Drive Token",
+    "GDRIVE_ID": "Default Google Drive ID",
+    "INDEX_URL": "Index URL",
+    "UPLOAD_PATHS": "Saved Upload Paths",
+    "EXCLUDED_EXTENSIONS": "Blocked Extensions",
+    "INCLUDED_EXTENSIONS": "Allowed Extensions",
+    "NAME_SUBSTITUTE": "Filename Rename Rules",
+    "YT_DLP_OPTIONS": "yt-dlp Defaults",
+    "GALLERY_DL_OPTIONS": "gallery-dl Defaults",
+    "FFMPEG_CMDS": "FFmpeg Presets",
+}
+
 leech_options = [
     "THUMBNAIL",
     "LEECH_SPLIT_SIZE",
@@ -46,6 +69,104 @@ leech_options = [
 ]
 rclone_options = ["RCLONE_CONFIG", "RCLONE_PATH", "RCLONE_FLAGS"]
 gdrive_options = ["TOKEN_PICKLE", "GDRIVE_ID", "INDEX_URL"]
+
+
+def get_user_setting_label(key):
+    return USER_SETTING_LABELS.get(key, key.replace("_", " ").title())
+
+
+def summarize_setting_value(value):
+    if value in ("", None, [], {}, ()):
+        return "Not set"
+    if isinstance(value, bool):
+        return "Enabled" if value else "Disabled"
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        preview = ", ".join(map(str, keys[:3]))
+        extra = "" if len(keys) <= 3 else f" +{len(keys) - 3} more"
+        return f"{len(value)} saved ({preview}{extra})" if preview else "Empty dict"
+    if isinstance(value, list):
+        preview = ", ".join(map(str, value[:3]))
+        extra = "" if len(value) <= 3 else f" +{len(value) - 3} more"
+        return f"{len(value)} items ({preview}{extra})" if preview else "Empty list"
+    text = str(value).strip()
+    return text if len(text) <= 60 else f"{text[:57]}..."
+
+
+def get_setting_source_and_value(user_dict, key):
+    if key in user_dict:
+        value = user_dict[key]
+        if value not in ("", None, [], {}, ()):
+            return value, "User"
+    default_value = Config.get(key)
+    if default_value not in ("", None, [], {}, ()):
+        return default_value, "Bot Default"
+    return None, "Unset"
+
+
+def format_user_setting_line(user_dict, key):
+    value, source = get_setting_source_and_value(user_dict, key)
+    summary = summarize_setting_value(value)
+    return f"<b>{get_user_setting_label(key)}:</b> <code>{escape(summary)}</code> <i>({source})</i>"
+
+
+def parse_mapping_input(raw_value, label):
+    if not raw_value.startswith("{") or not raw_value.endswith("}"):
+        raise ValueError(f"{label} must be a Python-style dict like {{'key': 'value'}}.")
+    try:
+        value = literal_eval(raw_value)
+    except (ValueError, SyntaxError) as exc:
+        raise ValueError(f"{label} must be a valid dict.") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a dict.")
+    return value
+
+
+def validate_user_option(option, value):
+    label = get_user_setting_label(option)
+    if option == "LEECH_SPLIT_SIZE":
+        if not str(value).isdigit():
+            value = get_size_bytes(value)
+        if value is None:
+            raise ValueError(f"{label} must be a valid size like 500mb, 2gb, or raw bytes.")
+        value = int(value)
+        if value <= 0:
+            raise ValueError(f"{label} must be greater than 0.")
+        return min(value, TgClient.MAX_SPLIT_SIZE)
+    if option == "EXCLUDED_EXTENSIONS":
+        fx = value.split()
+        cleaned = ["aria2", "!qB"]
+        for ext in fx:
+            ext = ext.lstrip(".").strip().lower()
+            if ext:
+                cleaned.append(ext)
+        return cleaned
+    if option == "INCLUDED_EXTENSIONS":
+        cleaned = []
+        for ext in value.split():
+            ext = ext.lstrip(".").strip().lower()
+            if ext:
+                cleaned.append(ext)
+        return cleaned
+    if option in ["UPLOAD_PATHS", "FFMPEG_CMDS", "YT_DLP_OPTIONS", "GALLERY_DL_OPTIONS"]:
+        return parse_mapping_input(value, label)
+    if option == "THUMBNAIL_LAYOUT":
+        layout = value.strip().lower()
+        parts = layout.split("x")
+        if len(parts) != 2 or not all(part.isdigit() and int(part) > 0 for part in parts):
+            raise ValueError(f"{label} must look like 3x3 or 4x2.")
+        return layout
+    if option in ["LEECH_DUMP_CHAT", "RCLONE_PATH", "GDRIVE_ID", "INDEX_URL", "LEECH_FILENAME_PREFIX", "NAME_SUBSTITUTE", "CLONE_DUMP_CHATS"]:
+        value = value.strip()
+        if not value:
+            raise ValueError(f"{label} cannot be empty.")
+        return value
+    return value
+
+
+def build_user_prompt(option):
+    label = get_user_setting_label(option)
+    return f"<b>{label}</b>\n{user_settings_text[option]}"
 
 
 async def get_user_settings(from_user, stype="main"):
@@ -197,19 +318,19 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("Close", f"userset {user_id} close")
 
         text = f"""<u>Leech Settings for {name}</u>
-Leech Type is <b>{ltype}</b>
-Custom Thumbnail <b>{thumbmsg}</b>
-Leech Split Size is <b>{split_size}</b>
-Equal Splits is <b>{equal_splits}</b>
-Media Group is <b>{media_group}</b>
-Leech Prefix is <code>{escape(lprefix)}</code>
-Leech Destination is <code>{leech_dest}</code>
-Clone Dump Chats is <code>{cdc}</code>
-Leech by <b>{leech_method}</b> session
-HYBRID Leech is <b>{hybrid_leech}</b>
-Thumbnail Layout is <b>{thumb_layout}</b>
-Files Links is <b>{fl}</b>
-"""
+<b>Send As:</b> <code>{ltype}</code>
+<b>Custom Thumbnail:</b> <code>{thumbmsg}</code> <i>({"User" if "THUMBNAIL" in user_dict else "Unset"})</i>
+<b>Split Evenly:</b> <code>{equal_splits}</code> <i>({"User" if "EQUAL_SPLITS" in user_dict else "Bot Default"})</i>
+<b>Media Group:</b> <code>{media_group}</code> <i>({"User" if "MEDIA_GROUP" in user_dict else "Bot Default"})</i>
+<b>Leech Session:</b> <code>{leech_method}</code> <i>({"User" if "USER_TRANSMISSION" in user_dict else "Bot Default"})</i>
+<b>Hybrid Leech:</b> <code>{hybrid_leech}</code> <i>({"User" if "HYBRID_LEECH" in user_dict else "Bot Default"})</i>
+<b>Files Links:</b> <code>{fl}</code> <i>({"User" if "FILES_LINKS" in user_dict else "Bot Default"})</i>
+
+{format_user_setting_line(user_dict, "LEECH_SPLIT_SIZE")}
+{format_user_setting_line(user_dict, "LEECH_DUMP_CHAT")}
+{format_user_setting_line(user_dict, "LEECH_FILENAME_PREFIX")}
+{format_user_setting_line(user_dict, "THUMBNAIL_LAYOUT")}
+{format_user_setting_line(user_dict, "CLONE_DUMP_CHATS")}"""
     elif stype == "rclone":
         buttons.data_button("Rclone Config", f"userset {user_id} menu RCLONE_CONFIG")
         buttons.data_button(
@@ -232,9 +353,9 @@ Files Links is <b>{fl}</b>
         else:
             rcflags = "None"
         text = f"""<u>Rclone Settings for {name}</u>
-Rclone Config <b>{rccmsg}</b>
-Rclone Path is <code>{rccpath}</code>
-Rclone Flags is <code>{rcflags}</code>"""
+<b>Rclone Config File:</b> <code>{rccmsg}</code> <i>({"User" if "RCLONE_CONFIG" in user_dict else "Unset"})</i>
+{format_user_setting_line(user_dict, "RCLONE_PATH")}
+{format_user_setting_line(user_dict, "RCLONE_FLAGS")}"""
     elif stype == "gdrive":
         buttons.data_button("token.pickle", f"userset {user_id} menu TOKEN_PICKLE")
         buttons.data_button("Default Gdrive ID", f"userset {user_id} menu GDRIVE_ID")
@@ -263,11 +384,11 @@ Rclone Flags is <code>{rcflags}</code>"""
         else:
             gdrive_id = "None"
         index = user_dict["INDEX_URL"] if user_dict.get("INDEX_URL", False) else "None"
-        text = f"""<u>Gdrive API Settings for {name}</u>
-Gdrive Token <b>{tokenmsg}</b>
-Gdrive ID is <code>{gdrive_id}</code>
-Index URL is <code>{index}</code>
-Stop Duplicate is <b>{sd_msg}</b>"""
+        text = f"""<u>Google Drive Settings for {name}</u>
+<b>Google Drive Token:</b> <code>{tokenmsg}</code> <i>({"User" if "TOKEN_PICKLE" in user_dict else "Unset"})</i>
+{format_user_setting_line(user_dict, "GDRIVE_ID")}
+{format_user_setting_line(user_dict, "INDEX_URL")}
+<b>Stop Duplicates:</b> <code>{sd_msg}</code> <i>({"User" if "STOP_DUPLICATE" in user_dict else "Bot Default"})</i>"""
     else:
         buttons.data_button("Leech", f"userset {user_id} leech")
         buttons.data_button("Rclone", f"userset {user_id} rclone")
@@ -359,21 +480,16 @@ Stop Duplicate is <b>{sd_msg}</b>"""
         buttons.data_button("Close", f"userset {user_id} close")
 
         text = f"""<u>Settings for {name}</u>
-Default Package is <b>{du}</b>
-Use <b>{tr}</b> token/config
-Upload Paths is <code>{upload_paths}</code>
+<b>Default Upload Tool:</b> <code>{du}</code> <i>({"User" if "DEFAULT_UPLOAD" in user_dict else "Bot Default"})</i>
+<b>Credentials to Use:</b> <code>{tr}</code> <i>({"User" if "USER_TOKENS" in user_dict else "Bot Default"})</i>
 
-Name substitution is <code>{ns_msg}</code>
-
-Excluded Extensions is <code>{ex_ex}</code>
-
-Included Extensions is <code>{inc_ex}</code>
-
-YT-DLP Options is <code>{ytopt}</code>
-
-Gallery-DL Options is <code>{gdlopt}</code>
-
-FFMPEG Commands is <b>{ffc}</b>"""
+{format_user_setting_line(user_dict, "UPLOAD_PATHS")}
+{format_user_setting_line(user_dict, "NAME_SUBSTITUTE")}
+{format_user_setting_line(user_dict, "EXCLUDED_EXTENSIONS")}
+{format_user_setting_line(user_dict, "INCLUDED_EXTENSIONS")}
+{format_user_setting_line(user_dict, "YT_DLP_OPTIONS")}
+{format_user_setting_line(user_dict, "GALLERY_DL_OPTIONS")}
+{format_user_setting_line(user_dict, "FFMPEG_CMDS")}"""
 
     return text, buttons.build_menu(2)
 
@@ -419,18 +535,15 @@ async def add_one(_, message, option):
     handler_dict[user_id] = False
     user_dict = user_data.get(user_id, {})
     value = message.text
-    if value.startswith("{") and value.endswith("}"):
-        try:
-            value = eval(value)
-            if user_dict[option]:
-                user_dict[option].update(value)
-            else:
-                update_user_ldata(user_id, option, value)
-        except Exception as e:
-            await send_message(message, str(e))
-            return
-    else:
-        await send_message(message, "It must be dict!")
+    label = get_user_setting_label(option)
+    try:
+        value = parse_mapping_input(value, label)
+        if user_dict[option]:
+            user_dict[option].update(value)
+        else:
+            update_user_ldata(user_id, option, value)
+    except (KeyError, ValueError) as e:
+        await send_message(message, str(e))
         return
     await delete_message(message)
     await database.update_user_data(user_id)
@@ -442,6 +555,9 @@ async def remove_one(_, message, option):
     handler_dict[user_id] = False
     user_dict = user_data.get(user_id, {})
     names = message.text.split("/")
+    if option not in user_dict or not isinstance(user_dict[option], dict):
+        await send_message(message, f"{get_user_setting_label(option)} has no saved keys to remove.")
+        return
     for name in names:
         if name in user_dict[option]:
             del user_dict[option][name]
@@ -453,35 +569,11 @@ async def remove_one(_, message, option):
 async def set_option(_, message, option):
     user_id = message.from_user.id
     handler_dict[user_id] = False
-    value = message.text
-    if option == "LEECH_SPLIT_SIZE":
-        if not value.isdigit():
-            value = get_size_bytes(value)
-        value = min(int(value), TgClient.MAX_SPLIT_SIZE)
-    elif option == "EXCLUDED_EXTENSIONS":
-        fx = value.split()
-        value = ["aria2", "!qB"]
-        for x in fx:
-            x = x.lstrip(".")
-            value.append(x.strip().lower())
-    elif option == "INCLUDED_EXTENSIONS":
-        fx = value.split()
-        value = []
-        for x in fx:
-            x = x.lstrip(".")
-            value.append(x.strip().lower())
-    elif option == "INDEX_URL":
-        value = value
-    elif option in ["UPLOAD_PATHS", "FFMPEG_CMDS", "YT_DLP_OPTIONS", "GALLERY_DL_OPTIONS"]:
-        if value.startswith("{") and value.endswith("}"):
-            try:
-                value = eval(value)
-            except Exception as e:
-                await send_message(message, str(e))
-                return
-        else:
-            await send_message(message, "It must be dict!")
-            return
+    try:
+        value = validate_user_option(option, message.text)
+    except ValueError as e:
+        await send_message(message, str(e))
+        return
     update_user_ldata(user_id, option, value)
     await delete_message(message)
     await database.update_user_data(user_id)
@@ -526,7 +618,12 @@ async def get_menu(option, message, user_id):
         back_to = "back"
     buttons.data_button("Back", f"userset {user_id} {back_to}")
     buttons.data_button("Close", f"userset {user_id} close")
-    text = f"Edit menu for: {option}"
+    value, source = get_setting_source_and_value(user_dict, option)
+    text = (
+        f"<b>{get_user_setting_label(option)}</b>\n"
+        f"Effective value: <code>{escape(summarize_setting_value(value))}</code>\n"
+        f"Source: <b>{source}</b>"
+    )
     await edit_message(message, text, buttons.build_menu(2))
 
 
@@ -698,13 +795,23 @@ async def edit_user_settings(client, query):
         await query.answer()
         buttons = ButtonMaker()
         if data[2] == "set":
-            text = user_settings_text[data[3]]
+            text = build_user_prompt(data[3])
             func = set_option
         elif data[2] == "addone":
-            text = f"Add one or more string key and value to {data[3]}. Example: {{'key 1': 62625261, 'key 2': 'value 2'}}. Timeout: 60 sec"
+            text = (
+                f"<b>{get_user_setting_label(data[3])}</b>\n"
+                "Add one or more key/value pairs.\n"
+                "Example: {'key 1': 62625261, 'key 2': 'value 2'}\n"
+                "Timeout: 60 sec"
+            )
             func = add_one
         elif data[2] == "rmone":
-            text = f"Remove one or more key from {data[3]}. Example: key 1/key2/key 3. Timeout: 60 sec"
+            text = (
+                f"<b>{get_user_setting_label(data[3])}</b>\n"
+                "Remove one or more keys.\n"
+                "Example: key 1/key2/key 3\n"
+                "Timeout: 60 sec"
+            )
             func = remove_one
         buttons.data_button("Back", f"userset {user_id} setevent")
         buttons.data_button("Close", f"userset {user_id} close")
@@ -713,7 +820,7 @@ async def edit_user_settings(client, query):
         await event_handler(client, query, pfunc)
         await get_menu(data[3], message, user_id)
     elif data[2] == "remove":
-        await query.answer("Removed!", show_alert=True)
+        await query.answer(f"{get_user_setting_label(data[3])} removed.", show_alert=True)
         if data[3] in ["THUMBNAIL", "RCLONE_CONFIG", "TOKEN_PICKLE"]:
             if data[3] == "THUMBNAIL":
                 fpath = thumb_path
@@ -729,7 +836,7 @@ async def edit_user_settings(client, query):
             update_user_ldata(user_id, data[3], "")
             await database.update_user_data(user_id)
     elif data[2] == "reset":
-        await query.answer("Reseted!", show_alert=True)
+        await query.answer(f"{get_user_setting_label(data[3]) if data[3] != 'all' else 'All user settings'} reset.", show_alert=True)
         if data[3] in user_dict:
             del user_dict[data[3]]
         else:
