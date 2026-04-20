@@ -222,12 +222,12 @@ async def get_buttons(key=None, edit_type=None):
             value = Config.get(key)
             source = get_config_source(key, value)
             msg = ""
-            buttons.data_button("Back", "botset var")
             if is_bool_setting(key):
                 buttons.data_button("Enable", f"botset boolvar {key} true")
                 buttons.data_button("Disable", f"botset boolvar {key} false")
             if key not in ["TELEGRAM_HASH", "TELEGRAM_API", "OWNER_ID", "BOT_TOKEN"]:
                 buttons.data_button("Default", f"botset resetvar {key}")
+            buttons.data_button("Back", "botset var")
             buttons.data_button("Close", "botset close")
             if key in [
                 "CMD_SUFFIX",
